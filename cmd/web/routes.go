@@ -1,22 +1,33 @@
 package main
 
-import "net/http"
+import (
+	"github.com/julienschmidt/httprouter" // New import
+	"github.com/justinas/alice"
+	"net/http"
+)
 
-// The routes() method returns a servemux containing our application routes.
-func (app *application) routes() *http.ServeMux {
-	mux := http.NewServeMux()
+func (app *application) routes() http.Handler {
+	// Initialize the router.
+	router := httprouter.New()
 
-	// Static issues
-	// http.Dir function is relative to the project directory
+	//Wrapping notFound() helper for matching error message [ view/99 | /missing]
+	router.NotFound = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		app.notFound(w) //if router != "/"
+	})
+
+	//static files route
 	fileServer := http.FileServer(http.Dir("./ui/static/"))
-	// mux.Handle() function register the file server as the handler
-	// "/static" - prefix
-	mux.Handle("/static/", http.StripPrefix("/static", fileServer))
+	router.Handler(http.MethodGet, "/static/*filepath", http.StripPrefix("/static", fileServer))
 
-	// swap the route declaration with new app
-	mux.HandleFunc("/", app.home)
-	mux.HandleFunc("/snippet/view", app.snippetView)
-	mux.HandleFunc("/snippet/create", app.snippetCreate)
+	//middleware chain containing the middleware specific to our dynamic application routes
+	dynamic := alice.New(app.sessionManager.LoadAndSave)
 
-	return mux
+	router.Handler(http.MethodGet, "/", dynamic.ThenFunc(app.home))
+	router.Handler(http.MethodGet, "/snippet/view/:id", dynamic.ThenFunc(app.snippetView))
+	router.Handler(http.MethodGet, "/snippet/create", dynamic.ThenFunc(app.snippetCreate))
+	router.Handler(http.MethodPost, "/snippet/create", dynamic.ThenFunc(app.snippetCreatePost))
+
+	//  middleware chain
+	standard := alice.New(app.recoverPanic, app.logRequest, secureHeaders)
+	return standard.Then(router)
 }
